@@ -266,9 +266,34 @@ def argmin(x, axis=None, keepdims=False):
 
 
 def argsort(x, axis=-1):
-    raise NotImplementedError(
-        "`argsort` is not supported with openvino backend"
-    )
+    x = get_ov_output(x)
+    if axis is None:
+        flatten_shape = ov_opset.constant([-1], Type.i32).output(0)
+        x = ov_opset.reshape(x, flatten_shape, False).output(0)
+        axis = 0
+    shape = ov_opset.shape_of(x, "i32").output(0)
+    rank = ov_opset.shape_of(shape, "i32").output(0)
+    scalar_shape = ov_opset.constant([], Type.i32).output(0)
+    rank = ov_opset.reshape(rank, scalar_shape, False).output(0)
+    if axis < 0:
+        axis_node = ov_opset.constant(axis, Type.i32).output(0)
+        axis = ov_opset.add(rank, axis_node).output(0)
+    else:
+        axis = ov_opset.constant(axis, Type.i32).output(0)
+    axis_dim = ov_opset.gather(
+        shape,
+        axis,
+        ov_opset.constant(0, Type.i32).output(0),
+    ).output(0)
+    sorted_indices = ov_opset.topk(
+        x,
+        k=axis_dim,
+        axis=axis,
+        mode="values",
+        sort_type="ascending",
+        sort=True,
+    ).output(1)
+    return OpenVINOKerasTensor(sorted_indices)
 
 
 def array(x, dtype=None):
