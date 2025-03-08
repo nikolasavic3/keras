@@ -243,9 +243,47 @@ def arctan(x):
 
 
 def arctan2(x1, x2):
-    raise NotImplementedError(
-        "`arctan2` is not supported with openvino backend"
+    x1 = get_ov_output(x1)
+    x2 = get_ov_output(x2)
+    x1_type = x1.get_element_type()
+    x2_type = x2.get_element_type()
+
+    if x1_type.is_integral():
+        ov_type = OPENVINO_DTYPES[config.floatx()]
+        x1 = ov_opset.convert(x1, ov_type)
+    if x2_type.is_integral():
+        ov_type = OPENVINO_DTYPES[config.floatx()]
+        x2 = ov_opset.convert(x2, ov_type)
+
+    x = ov_opset.divide(x1, x2)
+    y = ov_opset.atan(x)
+
+    ov_type = x1.get_element_type()
+    pi = ov_opset.constant(float(np.pi), ov_type)
+    half_pi = ov_opset.constant(float(np.pi / 2), ov_type)
+    neg_half_pi = ov_opset.constant(-float(np.pi / 2), ov_type)
+    zero_const = ov_opset.constant(0.0, ov_type)
+
+    cond_x2_gt0 = ov_opset.greater(x2, zero_const).output(0)
+    cond_x2_lt0 = ov_opset.less(x2, zero_const).output(0)
+
+    cond_x1_ge0 = ov_opset.greater_equal(x1, zero_const).output(0)
+    cond_x1_gt0 = ov_opset.greater(x1, zero_const).output(0)
+    cond_x1_eq0 = ov_opset.equal(x1, zero_const).output(0)
+
+    out_x2_lt0 = ov_opset.select(
+        cond_x1_ge0,
+        ov_opset.add(y, pi),
+        ov_opset.subtract(y, pi),
     )
+
+    out_x1_zero = ov_opset.select(cond_x1_eq0, zero_const, neg_half_pi)
+    out_x2_zero = ov_opset.select(cond_x1_gt0, half_pi, out_x1_zero)
+
+    out_not_pos = ov_opset.select(cond_x2_lt0, out_x2_lt0, out_x2_zero)
+
+    final_out = ov_opset.select(cond_x2_gt0, y, out_not_pos)
+    return OpenVINOKerasTensor(final_out.output(0))
 
 
 def arctanh(x):
@@ -267,31 +305,30 @@ def argmin(x, axis=None, keepdims=False):
 
 def argsort(x, axis=-1):
     x = get_ov_output(x)
+    x_shape = x.get_partial_shape()
+    rank = x_shape.rank.get_length()
+    if rank == 0:
+        return OpenVINOKerasTensor(ov_opset.constant([0], Type.i32).output(0))
     if axis is None:
         flatten_shape = ov_opset.constant([-1], Type.i32).output(0)
         x = ov_opset.reshape(x, flatten_shape, False).output(0)
+        x_shape = ov_opset.shape_of(x, Type.i32).output(0)
+        k = ov_opset.reduce_prod(
+            x_shape, ov_opset.constant([0], Type.i32), keep_dims=False
+        )
+        axis_dim = x.shape[0]
+        axis_dim = k
         axis = 0
-    shape = ov_opset.shape_of(x, "i32").output(0)
-    rank = ov_opset.shape_of(shape, "i32").output(0)
-    scalar_shape = ov_opset.constant([], Type.i32).output(0)
-    rank = ov_opset.reshape(rank, scalar_shape, False).output(0)
-    if axis < 0:
-        axis_node = ov_opset.constant(axis, Type.i32).output(0)
-        axis = ov_opset.add(rank, axis_node).output(0)
     else:
-        axis = ov_opset.constant(axis, Type.i32).output(0)
-    axis_dim = ov_opset.gather(
-        shape,
-        axis,
-        ov_opset.constant(0, Type.i32).output(0),
-    ).output(0)
+        if axis < 0:
+            axis = rank + axis
+        axis_dim = x_shape[axis].get_length()
     sorted_indices = ov_opset.topk(
         x,
         k=axis_dim,
         axis=axis,
-        mode="values",
-        sort_type="ascending",
-        sort=True,
+        mode="min",
+        sort="value",
     ).output(1)
     return OpenVINOKerasTensor(sorted_indices)
 
